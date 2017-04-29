@@ -1,22 +1,32 @@
 #!/usr/bin/env groovy
-podTemplate(name:'docker-slave', label: 'docker-slave',
-        containers: [
-            containerTemplate(name: 'jnlp', image: 'jenkinsci/jnlp-slave:2.62', args: '${computer.jnlpmac} ${computer.name}'),
-            containerTemplate(name: 'docker', image: 'docker', command: 'cat', ttyEnabled: true)
-        ],
-        volumes: [hostPathVolume(hostPath: '/var/run/docker.sock', mountPath: '/var/run/docker.sock')]) {
+properties([buildDiscarder(logRotator(artifactDaysToKeepStr: '', artifactNumToKeepStr: '', daysToKeepStr: '', numToKeepStr: '5')), pipelineTriggers([pollSCM('H/15 * * * *')])])
 
+node('master') {
+    git 'https://github.com/svenbs/graf-db.git'
+    tag = sh(script: "git tag -l | tail -n1 > tagfile", returnStdout: true).trim()
+    tag = readFile('tagfile').trim()
+}
 
+def buildDocker(String version) {
+    def exec = """
+        docker build ./ --pull=true --no-cache=true --force-rm -t graf-db:${version}
+        docker tag graf-db:${version} \${REGISTRY}/graf-db:${version}
+        docker push \${REGISTRY}/graf-db:${version}
+    """
+
+    sh exec
+}
+
+podTemplate(name: 'docker-slave') {
     node('docker-slave') {
         stage('Get a Git project') {
-            git 'https://github.com/svenbs/graf-db.git'
+            deleteDir()
+            cleanWs()
+
+            checkout([$class: 'GitSCM', branches: [[name: "refs/tags/${tag}"]], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[url: 'https://github.com/svenbs/graf-db']]])
             container('docker') {
                 stage('Build a Docker project') {
-                    sh """
-                    docker build --pull=true --no-cache=true -t graf-db:${tag} ./
-                    docker tag graf-db:${tag} docker.svenbuesing.de/graf-db:${tag}
-                    docker push docker.svenbuesing.de/graf-db:${tag}
-                    """
+                    buildDocker("${tag}")
                 }
             }
         }
